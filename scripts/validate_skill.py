@@ -114,6 +114,78 @@ for f in ["SKILL.md", "README.md"]:
     else:
         WARN(f"缺少 {f}")
 
+# ---------- 9. 空节检测（同节内既无正文亦无子标题）----------
+# 判定：某标题所辖章节（至下一个同级或更高级标题为止）内，若既无实质正文行，
+#      也无任何带内容的子标题，则该节为空节（FAIL）。
+# 说明：容器节（如「四、医案实录」下辖 8 则医案、「医案一」下辖 证/机/方/效）不算空节。
+def sections(text):
+    """产出 (行号, 层级, 标题, 本节正文行, 下一标题层级或None, 下一标题文本)。
+
+    本节正文 = 标题行之后、下一个同级或更高级标题之前的全部行。
+    """
+    lines = text.split("\n")
+    heads = [(i, l) for i, l in enumerate(lines) if re.match(r"^#{1,6}\s", l)]
+    for idx, (i, h) in enumerate(heads):
+        lvl = len(h) - len(h.lstrip("#"))
+        end = len(lines)
+        for j, l in enumerate(lines):
+            if j > i and re.match(r"^#{1,6}\s", l):
+                l2 = len(l) - len(l.lstrip("#"))
+                if l2 <= lvl:
+                    end = j
+                    break
+        nxt_lvl = nxt_txt = None
+        if idx + 1 < len(heads):
+            j, nh = heads[idx + 1]
+            nxt_lvl = len(nh) - len(nh.lstrip("#"))
+            nxt_txt = nh.lstrip("#").strip()
+        yield i, lvl, h, lines[i + 1:end], nxt_lvl, nxt_txt
+
+def substantive(line):
+    s = line.strip()
+    return bool(s) and s != "---"
+
+# 容器节判定：下一标题层级更深（子标题）→ 本节是容器，不算空节；
+#             下一标题同级且为四段链标题（证/机/方/效）→ 本节是医案容器节，同样不算空节。
+CHAIN_HEADS = {"证", "机", "方", "效"}
+
+empty_hits = []
+for f in sorted(glob.glob("*.md")) + md("modules/*.md") + md("cases/*.md") + md("sources/*.md"):
+    if os.path.basename(f) == "CHANGELOG.md":
+        continue
+    text = open(f, encoding="utf-8").read()
+    for i, lvl, h, body, nxt_lvl, nxt_txt in sections(text):
+        if any(substantive(l) for l in body):
+            continue
+        if nxt_lvl is not None and nxt_lvl > lvl:
+            continue  # 容器节：下辖子标题
+        if nxt_lvl is not None and nxt_lvl == lvl and nxt_txt in CHAIN_HEADS:
+            continue  # 医案容器节：下辖证/机/方/效
+        empty_hits.append((f, i + 1, h))
+for f, ln, h in empty_hits:
+    FAIL(f"空节（无正文亦无下辖内容）：{f} 第 {ln} 行 {h}")
+
+# ---------- 10. 书名号配对检测 ----------
+for f in sorted(glob.glob("*.md")) + md("modules/*.md") + md("cases/*.md") + md("sources/*.md"):
+    text = open(f, encoding="utf-8").read()
+    stack = []
+    bad = None
+    for ln, line in enumerate(text.split("\n"), 1):
+        for ch in line:
+            if ch == "《":
+                stack.append(ln)
+            elif ch == "》":
+                if not stack:
+                    bad = (ln, "多余的》")
+                    break
+                stack.pop()
+        if bad:
+            break
+    if bad:
+        FAIL(f"书名号未配对：{f} 第 {bad[0]} 行 {bad[1]}")
+    elif stack:
+        FAIL(f"书名号未闭合：{f} 第 {stack[0]} 行 起有《 未配》")
+
 # ---------- 8. 索引中不得出现行号硬编码（SKILL.md 正文）----------
 if os.path.exists("SKILL.md"):
     t = open("SKILL.md", encoding="utf-8").read()
